@@ -9,6 +9,8 @@ from torch.utils.tensorboard import SummaryWriter
 from utils.rend_util import get_psnr
 from SSP3D.EMA_update import ema_update
 from SSP3D.discriminator import Discriminator
+import csv
+
 
 
 
@@ -47,6 +49,16 @@ def Recon_trainer(cfg,model,loss,optimizer,scheduler,train_loader,unlabel_train_
     cfg.write_config()
     tb_logger = SummaryWriter(log_dir)
 
+    # 定义保存 trend.txt 的路径
+    trend_file_path = os.path.join(log_dir, 'trend.csv')
+
+    # 确保文件存在（如果不存在则创建） 写入标题行
+    if not os.path.exists(trend_file_path):
+        with open(trend_file_path, 'w', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow(["Epoch", "AvgEvalLoss", "AvgSDFLoss", "TeaAvgEvalLoss",
+                            "TeaAvgSDFLoss", "KeyProb", "AvgProb", "pseudoNum"])
+
 
     # 加载判别器
     discriminator = Discriminator().to(device)
@@ -58,12 +70,16 @@ def Recon_trainer(cfg,model,loss,optimizer,scheduler,train_loader,unlabel_train_
         raise FileNotFoundError(f"Discriminator checkpoint not found at {disc_checkpoint_path}")
 
     discriminator.eval()  # 判别器设置为评估模式
-    filt_val = 0.8
+    filt_val = config["pseudo_label"]["threshold"]
 
 
 
     start_epoch = 0
     iter = 0
+    ema_accu_num = 20
+    ema_acc_iter = 0
+
+
     if config["resume"] == True:
         checkpoint.load(config["weight"])
         # start_epoch = scheduler.last_epoch
@@ -80,7 +96,9 @@ def Recon_trainer(cfg,model,loss,optimizer,scheduler,train_loader,unlabel_train_
 
     accumulation_steps = config["data"]["accumulation_steps"]  # 累积步数，尝试不同的值
 
-    min_len = min(len(train_loader), len(unlabel_train_loader))
+    # min_len = min(len(train_loader), len(unlabel_train_loader))
+    min_len = 2000
+    total_ema_iter = min_len // (accumulation_steps*ema_accu_num)
     
     
     for e in range(start_epoch, config['other']['nepoch']):
@@ -90,6 +108,7 @@ def Recon_trainer(cfg,model,loss,optimizer,scheduler,train_loader,unlabel_train_
         optimizer.zero_grad()   # 重置优化器梯度
         total_prob = 0
         total_unlabel = 0
+        ema_acc_iter = 0
         for batch_id, ((indices, model_input, ground_truth), (unlabel_indices, unlabel_model_input)) in enumerate(
             itertools.islice(zip(train_loader, unlabel_train_loader), min_len)
         ):
@@ -135,8 +154,6 @@ def Recon_trainer(cfg,model,loss,optimizer,scheduler,train_loader,unlabel_train_
                 unlabel_batch = 0
             
             total_unlabel+=unlabel_batch
-
-            cfg.log_string(f"Batch {batch_id}: Discriminator probability = {mean_prob}, unlabel_batch = {unlabel_batch}")
             
             # 学生模型监督学习
             model_outputs = model(model_input, indices)
@@ -171,6 +188,7 @@ def Recon_trainer(cfg,model,loss,optimizer,scheduler,train_loader,unlabel_train_
             if (batch_id + 1) % accumulation_steps == 0:
                 # print("Student model state dict keys:", model.state_dict().keys())
                 # print("Teacher model state dict keys:", tea_net.state_dict().keys())
+                ema_acc_iter += 1
                 torch.nn.utils.clip_grad_norm_(parameters=model.parameters(), max_norm=0.7, norm_type=2)
                 
                 # 计算梯度范数
@@ -180,6 +198,11 @@ def Recon_trainer(cfg,model,loss,optimizer,scheduler,train_loader,unlabel_train_
                     param_norm = p.grad.detach().data.norm(2)
                     total_norm += param_norm.item() ** 2
                 total_norm = total_norm ** 0.5
+
+                # 教师模型的 EMA 更新 在每个 batch 的末尾更新教师模型权重
+                if ema_acc_iter % ema_accu_num == 0:
+                    curren_step = ema_acc_iter // ema_accu_num
+                    ema_update(tea_net, model, step= curren_step+e*total_ema_iter, total_steps=config['other']['nepoch']*total_ema_iter,initial_momentum = config['pseudo_label']['ema_alpha'])     
 
                 optimizer.step()
                 optimizer.zero_grad()
@@ -207,6 +230,7 @@ def Recon_trainer(cfg,model,loss,optimizer,scheduler,train_loader,unlabel_train_
                     # model_outputs['depth_weight'].item()
                 )
             cfg.log_string(msg)
+            cfg.log_string(f"Batch {batch_id}: Discriminator probability = {mean_prob}, unlabel_batch = {unlabel_batch}")
 
 
             tb_logger.add_scalar('Loss/total_loss', total_loss.item(), iter)
@@ -240,7 +264,9 @@ def Recon_trainer(cfg,model,loss,optimizer,scheduler,train_loader,unlabel_train_
         if e % config['other']['model_save_interval'] == 0:
             model.eval()
             eval_loss = 0
+            eval_sdf_loss = 0
             tea_eval_loss = 0
+            tea_eval_sdf_loss = 0
 
             eval_loss_info = {
             }
@@ -326,11 +352,13 @@ def Recon_trainer(cfg,model,loss,optimizer,scheduler,train_loader,unlabel_train_
                     print("NaN detected in total_loss!")
                 else:
                     eval_loss += total_loss.item()
+                    eval_sdf_loss += loss_output['sdf_loss'].item()
 
                 if torch.isnan(tea_total_loss).item():
                     print("NaN detected in tea_total_loss!")
                 else:
                     tea_eval_loss += tea_total_loss.item()
+                    tea_eval_sdf_loss += tea_loss_output['sdf_loss'].item()
 
             # 输出该epoch训练的教师模型数据情况
             total_prob_msg = f'Trainning message: the key value for prob is {filt_val} , and avg_total_prob is {avg_total_prob} ,  the number of total unlabel data which is successfully trained is {total_unlabel}' 
@@ -338,12 +366,16 @@ def Recon_trainer(cfg,model,loss,optimizer,scheduler,train_loader,unlabel_train_
 
             # 计算loss 用于决定是否保存模型                
             avg_eval_loss = eval_loss / (batch_id + 1)
+            avg_sdf_loss = eval_sdf_loss / (batch_id + 1)
             tea_avg_eval_loss = tea_eval_loss / (batch_id + 1)
+            tea_avg_sdf_loss = tea_eval_sdf_loss / (batch_id + 1)
 
             for key in eval_loss_info:
                 eval_loss_info[key] = eval_loss_info[key] / (batch_id + 1)
             eval_loss_msg = f'avg_eval_loss is {avg_eval_loss}'
+            eval_sdf_loss_msg = f'eval_sdf_loss_msg is {avg_sdf_loss}'
             cfg.log_string(eval_loss_msg)
+            cfg.log_string(eval_sdf_loss_msg)
             tb_logger.add_scalar('eval/eval_loss', avg_eval_loss, e)
             for key in eval_loss_info:
                 tb_logger.add_scalar("eval/" + key, eval_loss_info[key], e)
@@ -354,7 +386,9 @@ def Recon_trainer(cfg,model,loss,optimizer,scheduler,train_loader,unlabel_train_
             for key in tea_eval_loss_info:
                 tea_eval_loss_info[key] = tea_eval_loss_info[key] / (batch_id + 1)
             tea_eval_loss_msg = f'tea_avg_eval_loss is {tea_avg_eval_loss}'
+            tea_eval_sdf_loss_msg = f'tea_eval_sdf_loss_msg is {tea_avg_sdf_loss}'
             cfg.log_string(tea_eval_loss_msg)
+            cfg.log_string(tea_eval_sdf_loss_msg)
             tb_logger.add_scalar('eval/tea_eval_loss', tea_avg_eval_loss, e)
             for key in tea_eval_loss_info:
                 tb_logger.add_scalar("eval/tea_" + key, tea_eval_loss_info[key], e)
@@ -381,6 +415,14 @@ def Recon_trainer(cfg,model,loss,optimizer,scheduler,train_loader,unlabel_train_
             #     min_eval_loss_teacher = tea_avg_eval_loss
             # else:
             #     checkpoint.save("tea_model_latest", tea_net)
+
+            # 在每个 epoch 结束后写入关键信息
+            with open(trend_file_path, 'a', newline='') as f:
+                writer = csv.writer(f)
+                writer.writerow([e, f"{avg_eval_loss:.6f}", f"{avg_sdf_loss:.6f}",
+                                f"{tea_avg_eval_loss:.6f}", f"{tea_avg_sdf_loss:.6f}",
+                                f"{filt_val:.3f}", f"{avg_total_prob:.6f}", int(total_unlabel)])
+                cfg.log_string(f"Trend information saved to {trend_file_path}")
 
 
             # 按照 epoch 数量动态创建文件夹来保存模型
@@ -415,13 +457,12 @@ def Recon_trainer(cfg,model,loss,optimizer,scheduler,train_loader,unlabel_train_
                 cfg.log_string(f"Best teacher model updated: {best_tea_model_path}")
 
 
-            # 保存判别器模型
-            discriminator_checkpoint_path = os.path.join(log_dir, 'dict_latest.pth')
-            torch.save(discriminator.state_dict(), discriminator_checkpoint_path)
-            cfg.log_string(f"Discriminator model saved to {discriminator_checkpoint_path}")  
+            # # 保存判别器模型
+            # discriminator_checkpoint_path = os.path.join(log_dir, 'dict_latest.pth')
+            # torch.save(discriminator.state_dict(), discriminator_checkpoint_path)
+            # cfg.log_string(f"Discriminator model saved to {discriminator_checkpoint_path}")  
 
-            # 教师模型的 EMA 更新 在每个 batch 的末尾更新教师模型权重
-            ema_update(tea_net, model, step=e, total_steps=config['other']['nepoch'])          
+                 
 
                     
             

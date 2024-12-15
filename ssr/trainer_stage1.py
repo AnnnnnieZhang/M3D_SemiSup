@@ -223,6 +223,7 @@ def Recon_trainer(cfg,model,loss,optimizer,scheduler,train_loader,test_loader,de
         # after model_save_interval epoch, evaluate the model
         if e % config['other']['model_save_interval'] == 0:
             model.eval()
+            discriminator.eval()
             eval_loss = 0
             total_disc_loss = 0
             eval_loss_info = {
@@ -259,6 +260,8 @@ def Recon_trainer(cfg,model,loss,optimizer,scheduler,train_loader,test_loader,de
 
                 loss_output = loss(model_outputs, ground_truth, e)
                 total_loss = loss_output['total_loss']
+
+                # total_loss = total_loss + lambda_adv * fake_loss.detach()
             
 
                 psnr = get_psnr(model_outputs['rgb_values'], ground_truth['rgb'].cuda().reshape(-1,3))

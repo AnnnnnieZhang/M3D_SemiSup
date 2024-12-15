@@ -149,8 +149,8 @@ class SpatialEncoder(nn.Module):
         if self.use_diffu_prior:
             diffu_prior = diffu_prior.cuda().to(torch.float32)
             self.diffu_latent = self.model_D(diffu_prior)
-            self.latent_mix = self.diffu_weight * self.diffu_latent + (1-self.diffu_weight) * self.latent
-            # self.latent_mix = self.diffu_latent
+            # self.latent_mix = self.diffu_weight * self.diffu_latent + (1-self.diffu_weight) * self.latent
+            self.latent_mix = self.diffu_latent
 
 
         with profiler.record_function("encoder_index"):

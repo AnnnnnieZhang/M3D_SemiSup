@@ -67,7 +67,7 @@ def run(cfg):
 
     '''Load teacher_model'''
     cfg.log_string('Loading teacher model.')
-    teacher_checkpoint = torch.load('pretrain_models/teachers/model_latest_color_264.pth')
+    teacher_checkpoint = torch.load('pretrain_models/teachers/model_latest_5.pth')
     teacher_weights = teacher_checkpoint['net']
     teacher_weights = remove_module_prefix(teacher_checkpoint['net'])  # 处理权重
     tea_net.load_state_dict(teacher_weights)  # 加载处理后的权重

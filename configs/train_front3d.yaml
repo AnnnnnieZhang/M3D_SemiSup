@@ -12,8 +12,8 @@ teacher_weight: pretrain_models/teachers/model_latest_color_264.pth
 show_rendering: False                    # NOTE: True for novel view synthesis
 fix_random_seed: True                   # fix random seed
 pseudo_label: 
-  threshold: 0.5
-  ema_alpha: 0.999
+  threshold: 0.1
+  ema_alpha: 0.9996
   discriminator_lr: 0.0001
   lambda_adv: 0.0001
 
@@ -22,7 +22,7 @@ eval:
   extract_mesh: True
   split_n_pixels: 648                  # 648 * 2, split pixels (total pixels too large)
   mesh_coords: camera
-  export_color_mesh: True               # whether mesh with appearance NOTE: set False when evaluate
+  export_color_mesh: False               # whether mesh with appearance NOTE: set False when evaluate
   fusion_scene: False                     # whether fusion scene
   export_mesh: True
   
@@ -40,7 +40,7 @@ data:
   unlabeled_split_dir: ./dataset
   sdf_path: data/labeled_FRONT3D/gt-sdf
   train_class_name: ['desk', 'dresser', 'sofa', 'bed', 'bookshelf', 'cabinet', 'desk', 'dresser', 'chair', 'night_stand', 'table', 'desk', 'dresser']
-  test_class_name: 'angle_demo'
+  test_class_name: 'evaluation_total'
   load_dynamic: True                    # True:load the data dynamically, False:store them in the memory firstly
   trial: False                          # only use 200 split
   accumulation_steps: 15                 # 梯度累计iter 数
@@ -79,9 +79,9 @@ loss:
   use_curriculum_color: True           # use curriculum learning color
   use_curriculum_depth: True
   use_curriculum_normal: True
-  curri_color: [0, 40, 0.4, 0.4]     # [start_step, end_step, start_weight, end_weight] [30, 80, 0.0, 0.1][130, 300, 0.0, 0.1]
-  curri_depth: [0, 40, 0.1, 0.1]
-  curri_normal: [0, 40, 0.01, 0.01]
+  curri_color: [20, 50, 0, 0.4]     # [start_step, end_step, start_weight, end_weight] [30, 80, 0.0, 0.1][130, 300, 0.0, 0.1]
+  curri_depth: [20, 50, 0, 0.1]
+  curri_normal: [20, 50, 0, 0.01]
   vis_mask_loss: True                   # only calculate color,depth,normal loss on visible mask
   rgb_loss: L1loss
   color_weight: 0.0                     # if use curriculum learning color, set color_weight=0.0
